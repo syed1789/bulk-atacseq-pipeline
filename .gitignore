@@ -1,0 +1,9 @@
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+.snakemake/
+data/fastq/*.fastq.gz
+data/reference/genome.fa
+data/reference/genes.gtf
+data/reference/saccer_index.*.bt2

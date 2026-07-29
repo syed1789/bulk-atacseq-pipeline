@@ -1,0 +1,5 @@
+metric	value
+n_fragments	59880
+median_fragment_size	176
+pct_nucleosome_free_lt100bp	18.2
+pct_mononucleosome_147_294bp	38.7

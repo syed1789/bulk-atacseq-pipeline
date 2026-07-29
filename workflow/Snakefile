@@ -1,0 +1,177 @@
+"""
+Bulk ATAC-seq: bowtie2 alignment -> mitochondrial-read filtering -> duplicate
+removal -> Tn5 insertion-site shift (deeptools) -> fragment-size QC ->
+TSS-enrichment QC -> MACS3 peak calling (no Input control -- ATAC-seq compares
+open chromatin against its own background, unlike ChIP-seq).
+"""
+import os
+
+SAMPLES = ["SRR1822153", "SRR1822154", "SRR1822157", "SRR1822158"]
+
+BOWTIE2_IMAGE = "quay.io/biocontainers/bowtie2:2.5.5--ha27dd3b_0"
+MACS3_IMAGE = "quay.io/biocontainers/macs3:3.0.4--py313hda738de_0"
+DEEPTOOLS_IMAGE = "quay.io/biocontainers/deeptools:3.5.6--pyhdfd78af_0"
+WORKDIR = os.getcwd()
+
+
+rule all:
+    input:
+        expand("results/macs3/{sample}_peaks.narrowPeak", sample=SAMPLES),
+        expand("results/qc/{sample}_fragment_sizes.tsv", sample=SAMPLES),
+        expand("results/qc/{sample}_tss_enrichment.tsv", sample=SAMPLES),
+        "results/qc/mito_fractions.tsv",
+
+
+rule bowtie2_index:
+    input:
+        "data/reference/genome.fa",
+    output:
+        multiext(
+            "data/reference/saccer_index",
+            ".1.bt2", ".2.bt2", ".3.bt2", ".4.bt2", ".rev.1.bt2", ".rev.2.bt2",
+        ),
+    shell:
+        """
+        docker run --rm -v {WORKDIR}:/data {BOWTIE2_IMAGE} \
+          bowtie2-build --threads 4 /data/{input} /data/data/reference/saccer_index
+        """
+
+
+rule bowtie2_align:
+    input:
+        index=rules.bowtie2_index.output,
+        r1="data/fastq/{sample}_1.fastq.gz",
+        r2="data/fastq/{sample}_2.fastq.gz",
+    output:
+        sam=temp("results/bowtie2/{sample}.sam"),
+    shell:
+        """
+        docker run --rm -v {WORKDIR}:/data {BOWTIE2_IMAGE} \
+          bowtie2 --very-sensitive -X 2000 -p 4 \
+            -x /data/data/reference/saccer_index \
+            -1 /data/{input.r1} -2 /data/{input.r2} \
+            -S /data/{output.sam}
+        """
+
+
+rule sort_raw:
+    input:
+        "results/bowtie2/{sample}.sam",
+    output:
+        bam=temp("results/bowtie2/{sample}.raw.sorted.bam"),
+        bai=temp("results/bowtie2/{sample}.raw.sorted.bam.bai"),
+    shell:
+        """
+        samtools sort -@ 4 -o {output.bam} {input}
+        samtools index {output.bam}
+        """
+
+
+rule filter_mito:
+    input:
+        bam="results/bowtie2/{sample}.raw.sorted.bam",
+        bai="results/bowtie2/{sample}.raw.sorted.bam.bai",
+    output:
+        bam=temp("results/bowtie2/{sample}.nomito.sorted.bam"),
+        bai=temp("results/bowtie2/{sample}.nomito.sorted.bam.bai"),
+    shell:
+        """
+        chroms=$(samtools idxstats {input.bam} | cut -f1 | grep -v "MT\\|\\*")
+        samtools view -b {input.bam} $chroms > {output.bam}.tmp
+        samtools sort -@ 4 -o {output.bam} {output.bam}.tmp
+        samtools index {output.bam}
+        rm {output.bam}.tmp
+        """
+
+
+rule mito_fraction:
+    input:
+        bam=expand("results/bowtie2/{sample}.raw.sorted.bam", sample=SAMPLES),
+        bai=expand("results/bowtie2/{sample}.raw.sorted.bam.bai", sample=SAMPLES),
+    output:
+        "results/qc/mito_fractions.tsv",
+    run:
+        import subprocess
+        with open(output[0], "w") as f:
+            f.write("sample\tmapped_reads\tmito_reads\tpct_mito\n")
+            for sample, bam in zip(SAMPLES, input.bam):
+                mapped = int(subprocess.run(
+                    ["samtools", "view", "-c", "-F", "0x104", bam],
+                    capture_output=True, text=True, check=True).stdout)
+                mito = int(subprocess.run(
+                    ["samtools", "view", "-c", "-F", "0x104", bam, "MT"],
+                    capture_output=True, text=True, check=True).stdout)
+                pct = 100 * mito / mapped if mapped else 0
+                f.write(f"{sample}\t{mapped}\t{mito}\t{pct:.2f}\n")
+                print(f"{sample}: {mito}/{mapped} mapped reads mitochondrial ({pct:.2f}%)")
+
+
+rule dedup:
+    input:
+        "results/bowtie2/{sample}.nomito.sorted.bam",
+    output:
+        bam="results/bowtie2/{sample}.dedup.sorted.bam",
+        bai="results/bowtie2/{sample}.dedup.sorted.bam.bai",
+    shell:
+        """
+        samtools sort -n -@ 4 -o {output.bam}.nsort {input}
+        samtools fixmate -m -@ 4 {output.bam}.nsort {output.bam}.fixmate
+        samtools sort -@ 4 -o {output.bam}.fixmate.sorted {output.bam}.fixmate
+        samtools markdup -r -@ 4 {output.bam}.fixmate.sorted {output.bam}.dedup
+        samtools sort -@ 4 -o {output.bam} {output.bam}.dedup
+        samtools index {output.bam}
+        rm {output.bam}.nsort {output.bam}.fixmate {output.bam}.fixmate.sorted {output.bam}.dedup
+        """
+
+
+rule atac_shift:
+    input:
+        "results/bowtie2/{sample}.dedup.sorted.bam",
+    output:
+        bam="results/bowtie2/{sample}.shifted.sorted.bam",
+        bai="results/bowtie2/{sample}.shifted.sorted.bam.bai",
+    shell:
+        """
+        docker run --rm -v {WORKDIR}:/data {DEEPTOOLS_IMAGE} \
+          alignmentSieve --ATACshift --bam /data/{input} \
+            -o /data/{output.bam}.unsorted -p 4
+        samtools sort -@ 4 -o {output.bam} {output.bam}.unsorted
+        samtools index {output.bam}
+        rm {output.bam}.unsorted
+        """
+
+
+rule fragment_size_qc:
+    input:
+        "results/bowtie2/{sample}.dedup.sorted.bam",
+    output:
+        stats="results/qc/{sample}_fragment_sizes.tsv",
+        plot="results/qc/{sample}_fragment_sizes.png",
+    script:
+        "../scripts/fragment_size_qc.py"
+
+
+rule tss_enrichment:
+    input:
+        bam="results/bowtie2/{sample}.shifted.sorted.bam",
+        gtf="data/reference/genes.gtf",
+    output:
+        stats="results/qc/{sample}_tss_enrichment.tsv",
+        plot="results/qc/{sample}_tss_enrichment.png",
+    script:
+        "../scripts/tss_enrichment.py"
+
+
+rule macs3_callpeak:
+    input:
+        "results/bowtie2/{sample}.shifted.sorted.bam",
+    output:
+        "results/macs3/{sample}_peaks.narrowPeak",
+    shell:
+        """
+        docker run --rm -v {WORKDIR}:/data {MACS3_IMAGE} \
+          macs3 callpeak \
+            -t /data/{input} \
+            -f BAMPE -g 1.2e7 -n {wildcards.sample} \
+            --outdir /data/results/macs3 -q 0.05
+        """
