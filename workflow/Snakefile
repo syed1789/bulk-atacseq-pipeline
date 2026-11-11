@@ -13,6 +13,25 @@ MACS3_IMAGE = "quay.io/biocontainers/macs3:3.0.4--py313hda738de_0"
 DEEPTOOLS_IMAGE = "quay.io/biocontainers/deeptools:3.5.6--pyhdfd78af_0"
 WORKDIR = os.getcwd()
 
+# Container runtime. "docker" (default: laptop, EC2) or "apptainer" (HPC clusters,
+# where Docker is not permitted). Select with CONTAINER_RUNTIME=apptainer in the
+# environment; SLURM jobs inherit it. The `docker` command produced is unchanged.
+CONTAINER_RUNTIME = os.environ.get("CONTAINER_RUNTIME", "docker")
+
+
+def container_run(image):
+    """Shell prefix that runs a command in `image` with the work dir at /data."""
+    if CONTAINER_RUNTIME == "docker":
+        return f"docker run --rm -v {WORKDIR}:/data {image}"
+    if CONTAINER_RUNTIME == "apptainer":
+        return f"apptainer exec --bind {WORKDIR}:/data docker://{image}"
+    raise ValueError(f"CONTAINER_RUNTIME must be docker or apptainer, got {CONTAINER_RUNTIME!r}")
+
+
+BOWTIE2_RUN = container_run(BOWTIE2_IMAGE)
+MACS3_RUN = container_run(MACS3_IMAGE)
+DEEPTOOLS_RUN = container_run(DEEPTOOLS_IMAGE)
+
 
 rule all:
     input:
@@ -32,7 +51,7 @@ rule bowtie2_index:
         ),
     shell:
         """
-        docker run --rm -v {WORKDIR}:/data {BOWTIE2_IMAGE} \
+        {BOWTIE2_RUN} \
           bowtie2-build --threads 4 /data/{input} /data/data/reference/saccer_index
         """
 
@@ -46,7 +65,7 @@ rule bowtie2_align:
         sam=temp("results/bowtie2/{sample}.sam"),
     shell:
         """
-        docker run --rm -v {WORKDIR}:/data {BOWTIE2_IMAGE} \
+        {BOWTIE2_RUN} \
           bowtie2 --very-sensitive -X 2000 -p 4 \
             -x /data/data/reference/saccer_index \
             -1 /data/{input.r1} -2 /data/{input.r2} \
@@ -132,7 +151,7 @@ rule atac_shift:
         bai="results/bowtie2/{sample}.shifted.sorted.bam.bai",
     shell:
         """
-        docker run --rm -v {WORKDIR}:/data {DEEPTOOLS_IMAGE} \
+        {DEEPTOOLS_RUN} \
           alignmentSieve --ATACshift --bam /data/{input} \
             -o /data/{output.bam}.unsorted -p 4
         samtools sort -@ 4 -o {output.bam} {output.bam}.unsorted
@@ -169,7 +188,7 @@ rule macs3_callpeak:
         "results/macs3/{sample}_peaks.narrowPeak",
     shell:
         """
-        docker run --rm -v {WORKDIR}:/data {MACS3_IMAGE} \
+        {MACS3_RUN} \
           macs3 callpeak \
             -t /data/{input} \
             -f BAMPE -g 1.2e7 -n {wildcards.sample} \

@@ -1,0 +1,13 @@
+# Host-side tools for HPC/EC2 runs: Snakemake (+ SLURM executor) and the tools some
+# rules run natively (the bio tools themselves run in containers).
+name: wf
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  - python=3.12
+  - snakemake>=9
+  - snakemake-executor-plugin-slurm
+  - samtools
+  - matplotlib
