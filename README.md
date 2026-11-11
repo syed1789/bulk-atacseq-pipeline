@@ -90,7 +90,7 @@ pip install snakemake matplotlib
 
 snakemake -s workflow/Snakefile --cores 4 -p
 
-# SLURM cluster execution (real profile, not run here -- no cluster in this environment)
+# SLURM cluster execution
 snakemake -s workflow/Snakefile --workflow-profile workflow/profiles/slurm
 ```
 
@@ -121,3 +121,7 @@ snakemake -s workflow/Snakefile --workflow-profile workflow/profiles/slurm
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Running on HPC (SLURM) and AWS
+
+Includes `CONTAINER_RUNTIME=apptainer` switch for the Snakefile, a SLURM head-job script, and a one-shot EC2 launcher. See [HPC_AWS.md](HPC_AWS.md) for steps and what was verified.

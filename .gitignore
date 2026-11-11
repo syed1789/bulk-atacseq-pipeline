@@ -7,3 +7,5 @@ data/fastq/*.fastq.gz
 data/reference/genome.fa
 data/reference/genes.gtf
 data/reference/saccer_index.*.bt2
+*.sif
+logs/
